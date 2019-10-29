@@ -6,34 +6,46 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-const exporterPath string = "/opt/prometheus/exporters/dist/textfile/"
-//isDelayed: Used to signal that the cron job delay was triggered
-var isDelayed bool = false
+const exporterPath string = "/opt/prometheus/exporters/dist/textfile/crons.prom"
 
+//isDelayed: Used to signal that the cron job delay was triggered
+var (
+	isDelayed    bool = false
+	jobStartTime time.Time
+	jobDuration  float64
+	flgVersion   bool
+	version      string
+)
 func main() {
+	version = "1.1.13"
 	cmdPtr := flag.String("c", "", "[Required] The `cron job` command")
 	jobnamePtr := flag.String("n", "", "[Required] The `job name` to appear in the alarm")
-	thresPtr := flag.Int("t", 3600, "[Optional] The maximum `time` for this cron to run in seconds. Defaults to 1 hour")
 	logfilePtr := flag.String("l", "", "[Optional] The `log file` to store the cron output")
+	flag.BoolVar(&flgVersion, "version", false, "if true print version and exit")
 	flag.Parse()
+	if flgVersion {
+		fmt.Println("CronManager version " + version)
+		os.Exit(0)
+	}
 	flag.Usage = func() {
-		fmt.Printf("Usage: cronmanager -c command  -n jobname  [ -t time in seconds ] [ -l log file ]\nExample: cronmanager \"/usr/bin/php /var/www/app.zlien.com/console broadcast:entities:updated -e project -l 20000\" -n update_entitites_cron -t 3600 -l /path/to/log\n")
+		fmt.Printf("Usage: cronmanager -c command  -n jobname  [ -l log file ]\nExample: cronmanager \"/usr/bin/php /var/www/app.zlien.com/console broadcast:entities:updated -e project -l 20000\" -n update_entitites_cron -t 3600 -l /path/to/log\n")
 		flag.PrintDefaults()
 	}
 	if *cmdPtr == "" || *jobnamePtr == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
-	// Delete the exporter file if it exists
-	prepareExporterFile(*jobnamePtr)
 	// Parse the command by extracting the first token as the command and the rest as its args
 	cmdArr := strings.Split(*cmdPtr, " ")
 	cmdBin := cmdArr[0]
@@ -64,61 +76,68 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	//Start a timer in a goroutine that will write an alarm metric if the job exceeds the time
-	ticker := time.NewTicker(time.Second)
-	timer := time.NewTimer(time.Second * time.Duration(*thresPtr))
-	go func(timer *time.Timer, ticker *time.Ticker) {
-		for range timer.C {
-			writeToExporter(*jobnamePtr, "{issue=\"delayed\"} 1\n")
-			ticker.Stop()
-			isDelayed = true
+
+	//Record the start time of the job
+	jobStartTime = time.Now()
+	//Start a ticker in a goroutine that will write an alarm metric if the job exceeds the time
+	go func() {
+		for range time.Tick(time.Second) {
+			jobDuration = time.Since(jobStartTime).Seconds()
+			writeToExporter(*jobnamePtr, "duration", strconv.FormatFloat(jobDuration, 'f', 0, 64))
 		}
-	}(timer, ticker)
+	}()
 	// Execute the command
 	if err := cmd.Wait(); err != nil {
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if _, ok := exiterr.Sys().(syscall.WaitStatus); ok {
-				writeToExporter(*jobnamePtr, "{issue=\"failed\"} 1\n")
-				if !isDelayed {
-					writeToExporter(*jobnamePtr, "{issue=\"delayed\"} 0\n")
-				}
+				writeToExporter(*jobnamePtr, "failed", "1")
+				// Bting the duration to zero to denote that the job is no longer running
+				writeToExporter(*jobnamePtr, "duration", "0")
 			}
 		} else {
 			log.Fatalf("cmd.Wait: %v", err)
 		}
 	} else {
 		// The job had no errors
-		writeToExporter(*jobnamePtr, "{issue=\"failed\"} 0\n")
-		// and no delay was already logged
-		if !isDelayed {
-			writeToExporter(*jobnamePtr, "{issue=\"delayed\"} 0\n")
+		writeToExporter(*jobnamePtr, "failed", "0")
+		// Bting the duration to zero to denote that the job is no longer running
+		writeToExporter(*jobnamePtr, "duration", "0")
+	}
+}
+
+func writeToExporter(jobName string, label string, metric string) {
+	jobNeedle := "cronjob{name=\"" + jobName + "\",dimension=\"" + label + "\"}"
+	typeData := "# TYPE cron_job gauge"
+	jobData := jobNeedle + " " + metric
+	input, err := ioutil.ReadFile(exporterPath)
+	if err != nil {
+		// We're not sure why we can't read from the file. Let's try creating it and fail if that didn't work either
+		if _, err := os.Create(exporterPath); err != nil {
+			log.Fatal("Couldn't read or write to the exporter file. Check parent directory permissions")
 		}
 	}
-}
-
-func prepareExporterFile(jobName string) {
-	targetFile := exporterPath + jobName + ".prom"
-	f, err := os.Create(targetFile)
-	if err != nil {
-		log.Fatal(err)
-		return
+	re := regexp.MustCompile(jobNeedle + `.*\n`)
+	// If we have the job data alrady, just replace it and that's it
+	if re.Match(input) {
+		input = re.ReplaceAll(input, []byte(jobData+"\n"))
+	} else {
+		// If the job is not there then either there is no TYPE header at all and this is the first job
+		if re := regexp.MustCompile(typeData); !re.Match(input) {
+			// Add the TYPE and the job data
+			input = append(input, typeData+"\n"...)
+			input = append(input, jobData+"\n"...)
+		} else {
+			// Or there is a TYPE header with one or more other jobs. Just append the job to the TYPE header
+			input = re.ReplaceAll(input, []byte(typeData+"\n"+jobData))
+		}
 	}
-	_, err = f.WriteString("# TYPE " + jobName + " gauge\n")
-	if err != nil {
-		log.Fatal(err)
-		f.Close()
-		return
-	}
-}
-
-func writeToExporter(jobName string, data string) {
-	f, err := os.OpenFile(exporterPath+jobName+".prom",
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.Create(exporterPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer f.Close()
-	if _, err := f.WriteString(jobName + data); err != nil {
+	if _, err = f.Write(input); err != nil {
 		log.Fatal(err)
 	}
+	f.Sync()
 }

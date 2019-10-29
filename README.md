@@ -14,6 +14,22 @@ For the tool to work correctly, you need to have Prometheus **node exporter** in
 /opt/prometheus/exporters/node_exporter_current/node_exporter --collector.conntrack --collector.diskstats --collector.entropy --collector.filefd --collector.filesystem --collector.loadavg --collector.mdadm --collector.meminfo --collector.netdev --collector.netstat --collector.stat --collector.time --collector.vmstat --web.listen-address=0.0.0.0:9100 --log.level=info --collector.textfile --collector.textfile.directory=/opt/prometheus/exporters/dist/textfile
 ```
 
+# Installation
+
+Build the binary:
+
+```bash
+env GOOS=linux go build -o cronmanager
+```
+
+Move the program to a directory in your $PATH
+
+```bash
+sudo mv cronmanager /usr/local/bin/
+```
+
+
+
 # Usage
 
 The program can be used as follows:
@@ -55,9 +71,10 @@ For the tool to work, the `/opt/prometheus/exporters/dist/textfile/ `path **<u>m
 Once cronmanager starts a job, it will wait for the specified seconds (using `-t` or the default 3600 seconds). If the cron is still running, cronmanager writes to a file under the exporters path. The file name consists of the job name followed by the `.prom` extension. For example, if you run the command like this `cronmanager -c "some_command some_arguments" -n "myjob"` the following file will be created: `/opt/prometheus/exporters/dist/textfile/myjob.prom`. The contents of the file are as follows:
 
 ```plain
-# TYPE myjob gauge
-myjob{issue="failed"} 0
-myjob{issue="delayed"} 0
+# TYPE cron_job gauge
+cron_job{"name=cron1","dimension=failed"} 0
+cron_job{"name=cron1","dimension=delayed"} 0
+cron_job{"name=cron1","dimension=duration"} 10
 ```
 
 The numbers change to `1` depending on the issue found with the cron job (delayed/failed or both).
