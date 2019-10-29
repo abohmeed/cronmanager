@@ -35,7 +35,7 @@ sudo mv cronmanager /usr/local/bin/
 The program can be used as follows:
 
 ```bash
-cronmanager -c command -n jobname [ -t time in seconds ] [ -l log file ]
+cronmanager -c command -n jobname [ -l log file ]
 ```
 
 The `command`is the only mandatory argument. Notice that you cannot a bash shell or any of its shell built-ins as the command. So, the following examples will **<u>not work</u>**:
@@ -58,8 +58,6 @@ cronmanager -c "/usr/bin/python3 /path/to/python_script.py"
 
 `-n`: The job name (required). It's a good practice to append `_cron` to the job name for easier distinction when viewing the alerts on Prometheus or Graffana.
 
-`-t`: the time in seconds after which `cronmanager` will alert that the job is taking more than it should. The default is 3600 seconds (1 hour).
-
 `-l`: the log file were you want the cron job to write its output. The default is that any output is trashed.
 
 Notice that if  don't specify `-n` followed by a name, the command will default to "Generic" as the job name.
@@ -73,7 +71,6 @@ Once cronmanager starts a job, it will wait for the specified seconds (using `-t
 ```plain
 # TYPE cron_job gauge
 cron_job{"name=cron1","dimension=failed"} 0
-cron_job{"name=cron1","dimension=delayed"} 0
 cron_job{"name=cron1","dimension=duration"} 10
 ```
 
