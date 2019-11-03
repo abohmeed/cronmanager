@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -15,23 +16,27 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/marcsauter/single"
 )
 
 const exporterPath string = "/opt/prometheus/exporters/dist/textfile/crons.prom"
 
 //isDelayed: Used to signal that the cron job delay was triggered
 var (
-	isDelayed    bool = false
+	isDelayed    = false
 	jobStartTime time.Time
 	jobDuration  float64
 	flgVersion   bool
 	version      string
 )
+
 func main() {
-	version = "1.1.13"
+	version = "1.1.16"
 	cmdPtr := flag.String("c", "", "[Required] The `cron job` command")
 	jobnamePtr := flag.String("n", "", "[Required] The `job name` to appear in the alarm")
 	logfilePtr := flag.String("l", "", "[Optional] The `log file` to store the cron output")
+	lockFilePtr := flag.String("k", "", "[Optional] When specified, the lock file is used to ensure that no other cron jobs using the same file will run unless the current one has exited")
 	flag.BoolVar(&flgVersion, "version", false, "if true print version and exit")
 	flag.Parse()
 	if flgVersion {
@@ -71,7 +76,21 @@ func main() {
 	} else {
 		cmd.Stdout = &buf
 	}
-
+	s := single.New(*lockFilePtr)
+	for {
+		if err := s.CheckLock(); err != nil && err == single.ErrAlreadyRunning {
+			rand.Seed(time.Now().UnixNano())
+			wait := rand.Intn(300)
+			log.Println("Another cron job is running. Retrying in ", wait, " seconds")
+			time.Sleep(time.Second * 30)
+		} else if err != nil {
+			// Another error occurred, might be worth handling it as well
+			log.Fatalf("Failed to acquire exclusive app lock: %v", err)
+		} else {
+			break
+		}
+	}
+	defer s.TryUnlock()
 	err := cmd.Start()
 	if err != nil {
 		log.Fatal(err)
@@ -102,6 +121,7 @@ func main() {
 		writeToExporter(*jobnamePtr, "failed", "0")
 		// Bting the duration to zero to denote that the job is no longer running
 		writeToExporter(*jobnamePtr, "duration", "0")
+		// In all cases, unlock the file
 	}
 }
 
