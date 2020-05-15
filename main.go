@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,8 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/marcsauter/single"
+	"github.com/juju/fslock"
 )
 
 const exporterPath string = "/opt/prometheus/exporters/dist/textfile/crons.prom"
@@ -32,11 +30,10 @@ var (
 )
 
 func main() {
-	version = "1.1.16"
+	version = "1.1.18"
 	cmdPtr := flag.String("c", "", "[Required] The `cron job` command")
 	jobnamePtr := flag.String("n", "", "[Required] The `job name` to appear in the alarm")
 	logfilePtr := flag.String("l", "", "[Optional] The `log file` to store the cron output")
-	lockFilePtr := flag.String("k", "", "[Optional] When specified, the lock file is used to ensure that no other cron jobs using the same file will run unless the current one has exited")
 	flag.BoolVar(&flgVersion, "version", false, "if true print version and exit")
 	flag.Parse()
 	if flgVersion {
@@ -76,21 +73,6 @@ func main() {
 	} else {
 		cmd.Stdout = &buf
 	}
-	s := single.New(*lockFilePtr)
-	for {
-		if err := s.CheckLock(); err != nil && err == single.ErrAlreadyRunning {
-			rand.Seed(time.Now().UnixNano())
-			wait := rand.Intn(300)
-			log.Println("Another cron job is running. Retrying in ", wait, " seconds")
-			time.Sleep(time.Second * 30)
-		} else if err != nil {
-			// Another error occurred, might be worth handling it as well
-			log.Fatalf("Failed to acquire exclusive app lock: %v", err)
-		} else {
-			break
-		}
-	}
-	defer s.TryUnlock()
 	err := cmd.Start()
 	if err != nil {
 		log.Fatal(err)
@@ -129,6 +111,15 @@ func writeToExporter(jobName string, label string, metric string) {
 	jobNeedle := "cronjob{name=\"" + jobName + "\",dimension=\"" + label + "\"}"
 	typeData := "# TYPE cron_job gauge"
 	jobData := jobNeedle + " " + metric
+
+	// Lock filepath to prevent race conditions
+	lock := fslock.New(exporterPath)
+	err := lock.Lock()
+	if err != nil {
+	    log.Println("Error locking file " + exporterPath)
+	}
+	defer lock.Unlock()
+
 	input, err := ioutil.ReadFile(exporterPath)
 	if err != nil {
 		// We're not sure why we can't read from the file. Let's try creating it and fail if that didn't work either
