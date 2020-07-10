@@ -18,8 +18,6 @@ import (
 	"github.com/juju/fslock"
 )
 
-const exporterPath string = "/opt/prometheus/exporters/dist/textfile/crons.prom"
-
 //isDelayed: Used to signal that the cron job delay was triggered
 var (
 	isDelayed    = false
@@ -30,6 +28,7 @@ var (
 )
 
 func main() {
+
 	version = "1.1.18"
 	cmdPtr := flag.String("c", "", "[Required] The `cron job` command")
 	jobnamePtr := flag.String("n", "", "[Required] The `job name` to appear in the alarm")
@@ -107,11 +106,21 @@ func main() {
 	}
 }
 
+func getExporterPath() string {
+	exporterPath, exists := os.LookupEnv("COLLECTOR_TEXTFILE_PATH")
+	exporterPath = exporterPath + "/crons.prom"
+	if !exists {
+		exporterPath = "/opt/prometheus/exporters/dist/textfile/crons.prom"
+	}
+	return exporterPath
+}
+
 func writeToExporter(jobName string, label string, metric string) {
 	jobNeedle := "cronjob{name=\"" + jobName + "\",dimension=\"" + label + "\"}"
 	typeData := "# TYPE cron_job gauge"
 	jobData := jobNeedle + " " + metric
 
+	exporterPath := getExporterPath()
 	// Lock filepath to prevent race conditions
 	lock := fslock.New(exporterPath)
 	err := lock.Lock()
