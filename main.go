@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
 	"github.com/juju/fslock"
 )
 
@@ -27,9 +28,24 @@ var (
 	version      string
 )
 
+const (
+	idleForSeconds = 60
+)
+
+// wait for rest of the idleForSeconds so Prometheus can notice that something is happening
+func idleWait(jobStart time.Time) {
+	// Idling to let Prometheus to notice we are running
+	diff := idleForSeconds - (time.Now().Unix() - jobStart.Unix())
+	if diff > 0 {
+		fmt.Printf("Idle flag active so I am going to wait for for additional %d seconds", diff)
+		time.Sleep(time.Second * time.Duration(diff))
+	}
+}
+
 func main() {
 
 	version = "1.1.18"
+	idle := flag.Bool("i", false, fmt.Sprintf("Idle for %d seconds at the beginning so Prometheus can notice it's actually running", idleForSeconds))
 	cmdPtr := flag.String("c", "", "[Required] The `cron job` command")
 	jobnamePtr := flag.String("n", "", "[Required] The `job name` to appear in the alarm")
 	logfilePtr := flag.String("l", "", "[Optional] The `log file` to store the cron output")
@@ -47,6 +63,23 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	//Record the start time of the job
+	jobStartTime = time.Now()
+	//Start a ticker in a goroutine that will write an alarm metric if the job exceeds the time
+	go func() {
+		for range time.Tick(time.Second) {
+			jobDuration = time.Since(jobStartTime).Seconds()
+			// Log current duration counter
+			writeToExporter(*jobnamePtr, "duration", strconv.FormatFloat(jobDuration, 'f', 0, 64))
+			// Store last timestamp
+			writeToExporter(*jobnamePtr, "last", fmt.Sprintf("%d", time.Now().Unix()))
+		}
+	}()
+
+	// Job started
+	writeToExporter(*jobnamePtr, "run", "1")
+
 	// Parse the command by extracting the first token as the command and the rest as its args
 	cmdArr := strings.Split(*cmdPtr, " ")
 	cmdBin := cmdArr[0]
@@ -77,22 +110,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	//Record the start time of the job
-	jobStartTime = time.Now()
-	//Start a ticker in a goroutine that will write an alarm metric if the job exceeds the time
-	go func() {
-		for range time.Tick(time.Second) {
-			jobDuration = time.Since(jobStartTime).Seconds()
-			writeToExporter(*jobnamePtr, "duration", strconv.FormatFloat(jobDuration, 'f', 0, 64))
-		}
-	}()
 	// Execute the command
-	if err := cmd.Wait(); err != nil {
+	err = cmd.Wait()
+
+	// wait if idle is active
+	if *idle {
+		idleWait(jobStartTime)
+	}
+
+	if err != nil {
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			if _, ok := exiterr.Sys().(syscall.WaitStatus); ok {
 				writeToExporter(*jobnamePtr, "failed", "1")
-				// Bting the duration to zero to denote that the job is no longer running
-				writeToExporter(*jobnamePtr, "duration", "0")
+				// Job is no longer running
+				writeToExporter(*jobnamePtr, "run", "0")
 			}
 		} else {
 			log.Fatalf("cmd.Wait: %v", err)
@@ -100,17 +131,20 @@ func main() {
 	} else {
 		// The job had no errors
 		writeToExporter(*jobnamePtr, "failed", "0")
-		// Bting the duration to zero to denote that the job is no longer running
-		writeToExporter(*jobnamePtr, "duration", "0")
+		// Job is no longer running
+		writeToExporter(*jobnamePtr, "run", "0")
 		// In all cases, unlock the file
 	}
+
+	// Store last timestamp
+	writeToExporter(*jobnamePtr, "last", fmt.Sprintf("%d", time.Now().Unix()))
 }
 
 func getExporterPath() string {
 	exporterPath, exists := os.LookupEnv("COLLECTOR_TEXTFILE_PATH")
 	exporterPath = exporterPath + "/crons.prom"
 	if !exists {
-		exporterPath = "/opt/prometheus/exporters/dist/textfile/crons.prom"
+		exporterPath = "/var/cache/prometheus/crons.prom"
 	}
 	return exporterPath
 }
@@ -125,7 +159,7 @@ func writeToExporter(jobName string, label string, metric string) {
 	lock := fslock.New(exporterPath)
 	err := lock.Lock()
 	if err != nil {
-	    log.Println("Error locking file " + exporterPath)
+		log.Println("Error locking file " + exporterPath)
 	}
 	defer lock.Unlock()
 
@@ -155,9 +189,13 @@ func writeToExporter(jobName string, label string, metric string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	err = f.Chmod(0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	defer f.Close()
 	if _, err = f.Write(input); err != nil {
 		log.Fatal(err)
 	}
-	f.Sync()
 }

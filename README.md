@@ -58,6 +58,8 @@ cronmanager -c "/usr/bin/php /var/www/webdir/console broadcast:entities:updated 
 cronmanager -c "/usr/bin/python3 /path/to/python_script.py"
 ```
 
+Additional *-i* parameter adds sleep at the end of the process to let Prometheus to notice something is happening. It's going to sleep for 60 seconds minus anything that had happened before that. That means that if the command takes 20 seconds to finish the sleep at the end will be 40 seconds.
+
 # Options
 
 `-c`: The command to execute (required). This parameter is required. Please see the Usage section for caveats.
