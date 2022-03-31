@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juju/fslock"
+//	"github.com/juju/fslock"
 )
 
 //isDelayed: Used to signal that the cron job delay was triggered
@@ -161,18 +161,19 @@ func writeToExporter(jobName string, label string, metric string) {
 
 	exporterPath := getExporterPath(jobName)
 	// Lock filepath to prevent race conditions
-	lock := fslock.New(exporterPath)
-	err := lock.Lock()
-	if err != nil {
-		log.Println("Error locking file " + exporterPath)
-	}
-	defer lock.Unlock()
+	// however, lock also prevents reading
+//	lock := fslock.New(exporterPath+".tmp")
+//	err := lock.Lock()
+//	if err != nil {
+//		log.Println("Error locking file " + exporterPath)
+//	}
+//	defer lock.Unlock()
 
 	input, err := ioutil.ReadFile(exporterPath)
 	if err != nil {
 		// We're not sure why we can't read from the file.
 		// Let's try creating it and fail if that didn't work either
-		if _, err := os.Create(exporterPath); err != nil {
+		if _, err := os.Create(exporterPath+".tmp"); err != nil {
 			log.Fatal("Couldn't read or write to the exporter file. Check parent directory permissions")
 		}
 	}
@@ -192,7 +193,7 @@ func writeToExporter(jobName string, label string, metric string) {
 			input = re.ReplaceAll(input, []byte(typeData+"\n"+jobData))
 		}
 	}
-	f, err := os.Create(exporterPath)
+	f, err := os.Create(exporterPath+".tmp")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -200,9 +201,11 @@ func writeToExporter(jobName string, label string, metric string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	defer f.Close()
 	if _, err = f.Write(input); err != nil {
+		log.Fatal(err)
+	}
+	f.Close();
+	if err = os.Rename(exporterPath+".tmp", exporterPath); err != nil {
 		log.Fatal(err)
 	}
 }
