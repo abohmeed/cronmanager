@@ -19,7 +19,7 @@ import (
 	"github.com/juju/fslock"
 )
 
-//isDelayed: Used to signal that the cron job delay was triggered
+// isDelayed: Used to signal that the cron job delay was triggered
 var (
 	isDelayed    = false
 	jobStartTime time.Time
@@ -90,7 +90,7 @@ func main() {
 
 	// If we have a log file specified, use it
 	if *logfilePtr != "" {
-		outfile, err := os.Create(*logfilePtr)
+		outfile, err := os.OpenFile(*logfilePtr, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			panic(err)
 		}
